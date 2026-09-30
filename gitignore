@@ -1,0 +1,35 @@
+# Secrets - never commit
+secrets.h
+*.env
+.env*
+settings.js
+flows_cred.json
+
+# Teacher versions (answer keys)
+*Enseignant*
+*Corrige*
+
+# Arduino / build outputs
+build/
+*.bin
+*.elf
+*.map
+
+# App Inventor / Android
+*.apk
+*.aab
+
+# Extension build (CellScan)
+IoTLAB2/extension-cellscan/build/
+IoTLAB2/extension-cellscan/aix/
+
+# Node-RED runtime files
+.node-red/
+node_modules/
+*.backup
+.flows*.json.backup
+
+# Office temporary files and OS
+~$*
+.DS_Store
+Thumbs.db

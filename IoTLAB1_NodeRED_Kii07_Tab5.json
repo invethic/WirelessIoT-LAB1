@@ -1,0 +1,787 @@
+[
+  {
+    "id": "d781c74f0a2e9fc5",
+    "type": "tab",
+    "label": "Watch Tracker",
+    "disabled": false,
+    "info": "Receives watch messages via MQTT from HiveMQ Cloud, geolocates via Google API, displays on worldmap"
+  },
+  {
+    "id": "7209b914c5f6c9d2",
+    "type": "mqtt in",
+    "z": "d781c74f0a2e9fc5",
+    "name": "topic for normal position",
+    "topic": "watches/location",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "74b2b1bf0e8c55e5",
+    "nl": false,
+    "rap": false,
+    "rh": 0,
+    "inputs": 0,
+    "x": 160,
+    "y": 100,
+    "wires": [
+      [
+        "7d87e01c3493bff9"
+      ]
+    ]
+  },
+  {
+    "id": "4192bfbfc9b969d2",
+    "type": "mqtt in",
+    "z": "d781c74f0a2e9fc5",
+    "name": "topic for SOS position",
+    "topic": "watches/sos",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "74b2b1bf0e8c55e5",
+    "nl": false,
+    "rap": false,
+    "rh": 0,
+    "inputs": 0,
+    "x": 170,
+    "y": 160,
+    "wires": [
+      [
+        "7d87e01c3493bff9"
+      ]
+    ]
+  },
+  {
+    "id": "92f960a6670a1499",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test: normal message",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "IMEI:869387020011400;service:[208.01.3bad.3f27@-69];neighbors:[208.01.3bad.3f26@-74][208.01.3bad.3d26@-99][208.01.3bad.9eed@-103]",
+    "payloadType": "str",
+    "x": 140,
+    "y": 240,
+    "wires": [
+      [
+        "7d87e01c3493bff9"
+      ]
+    ]
+  },
+  {
+    "id": "b282158bdbf44b4d",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test: SOS message",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "SOS IMEI:869387020011400;",
+    "payloadType": "str",
+    "x": 140,
+    "y": 300,
+    "wires": [
+      [
+        "7d87e01c3493bff9"
+      ]
+    ]
+  },
+  {
+    "id": "7d87e01c3493bff9",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Parse watch message",
+    "func": "const raw = (typeof msg.payload === 'string'\n    ? msg.payload\n    : String(msg.payload)\n).trim();\n\nmsg.rawMessage = raw;\n\nfunction parseCell(token) {\n    const m = token.match(/^(\\d+)\\.(\\d+)\\.([0-9a-fA-F]+)\\.([0-9a-fA-F]+)@(-?\\d+)$/);\n    if (!m) return null;\n    return {\n        mobileCountryCode: parseInt(m[1], 10),\n        mobileNetworkCode: parseInt(m[2], 10),\n        locationAreaCode:  parseInt(m[3], 16),\n        cellId:            parseInt(m[4], 16),\n        signalStrength:    parseInt(m[5], 10)\n    };\n}\n\nconst sosMatch = raw.match(/^SOS\\s+IMEI:(\\d+);?$/i);\nif (sosMatch) {\n    msg.imei = sosMatch[1];\n    msg.isSOS = true;\n    msg.topic = 'sos';\n    msg.serving = null;\n    msg.neighbors = [];\n    node.status({ fill:'red', shape:'dot', text:'SOS from ' + msg.imei });\n    return [null, msg];\n}\n\nconst imeiMatch    = raw.match(/IMEI:(\\d+)/);\nconst serviceMatch = raw.match(/service:\\[([^\\]]+)\\]/);\nconst neighborRe   = /\\[([^\\]]+)\\]/g;\n\nif (!imeiMatch || !serviceMatch) {\n    node.error('Unparseable message: ' + raw, msg);\n    return [null, null];\n}\n\nconst serving = parseCell(serviceMatch[1]);\nif (!serving) {\n    node.error('Unparseable serving cell: ' + serviceMatch[1], msg);\n    return [null, null];\n}\n\nconst neighbors = [];\nlet nm;\nlet skipFirst = true;\nwhile ((nm = neighborRe.exec(raw)) !== null) {\n    if (skipFirst) { skipFirst = false; continue; }\n    const c = parseCell(nm[1]);\n    if (c) neighbors.push(c);\n}\n\nmsg.imei      = imeiMatch[1];\nmsg.isSOS     = false;\nmsg.topic     = 'location';\nmsg.serving   = serving;\nmsg.neighbors = neighbors;\n\nmsg.geoBody = {\n    radioType: 'gsm',\n    considerIp: true,\n    cellTowers: [serving, ...neighbors]\n};\n\nnode.status({ fill:'green', shape:'dot', text: msg.imei + ' · ' + (1+neighbors.length) + ' towers' });\nreturn [msg, null];",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 180,
+    "wires": [
+      [
+        "d257bfeadad5c23d"
+      ],
+      [
+        "e2dc373b65bca20f"
+      ]
+    ]
+  },
+  {
+    "id": "d257bfeadad5c23d",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Prepare Geo request",
+    "func": "// Prepare Geo request (montre Kii07) - version IoTLAB1 robuste\nconst apiKey = String(env.get('GOOGLE_GEO_API_KEY') || '').trim();\nif (!apiKey || apiKey.startsWith('__')) {       // vide, ou masquee (\"__PWRD__\") si variable de type credential\n    node.error('Cle API absente ou illisible : ' + (apiKey || '(vide)') + ' -> voir section 6.3', msg);\n    node.status({ fill: 'red', shape: 'ring', text: 'cle API absente' });\n    return null;\n}\nif (!/^AIza[0-9A-Za-z_-]{35}$/.test(apiKey)) node.warn('Format de cle inattendu (attendu : AIza + 35 caracteres)');\nconst s = msg.serving;\n// Cell ID > 65535 => ce n'est pas un CID 2G (16 bits) : cellule LTE (ECI 28 bits)\nconst radio = (s.cellId > 65535) ? 'lte' : 'gsm';\nmsg.url     = 'https://www.googleapis.com/geolocation/v1/geolocate?key=' + apiKey;\nmsg.method  = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    radioType: radio,\n    homeMobileCountryCode: s.mobileCountryCode,\n    homeMobileNetworkCode: s.mobileNetworkCode,\n    considerIp: false,                      // pas de repli trompeur sur l'IP du PC\n    cellTowers: [s, ...msg.neighbors]\n};\nnode.status({ fill: 'blue', shape: 'dot', text: radio + ' - ' + msg.payload.cellTowers.length + ' cellule(s)' });\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 640,
+    "y": 140,
+    "wires": [
+      [
+        "8c3a4825ae0ff6d7"
+      ]
+    ]
+  },
+  {
+    "id": "8c3a4825ae0ff6d7",
+    "type": "http request",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Google Geolocation API",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "authType": "",
+    "x": 860,
+    "y": 140,
+    "wires": [
+      [
+        "0403194fe0ac935c",
+        "dbg_geo_raw"
+      ]
+    ],
+    "senderr": false
+  },
+  {
+    "id": "0403194fe0ac935c",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Handle geo response",
+    "func": "if (!msg.payload || msg.payload.error) {\n    const e = (msg.payload && msg.payload.error) || {};\n    const reason = (e.errors && e.errors[0] && e.errors[0].reason) || '';\n    node.warn('Geolocation API : HTTP ' + msg.statusCode + ' ' + reason + ' - ' + (e.message || 'reponse vide') + ' (voir tableau des erreurs, section 6.3)');\n    msg.lat      = null;\n    msg.lng      = null;\n    msg.accuracy = null;\n} else {\n    msg.lat      = msg.payload.location.lat;\n    msg.lng      = msg.payload.location.lng;\n    msg.accuracy = msg.payload.accuracy;\n}\n\nconst watches = flow.get('watches') || {};\nif (!watches[msg.imei]) {\n    watches[msg.imei] = {\n        imei:      msg.imei,\n        lat:       msg.lat,\n        lng:       msg.lng,\n        accuracy:  msg.accuracy,\n        sos:       msg.isSOS || false,\n        serving:   msg.serving,\n        neighbors: msg.neighbors,\n        updatedAt: new Date().toISOString()\n    };\n} else {\n    watches[msg.imei].lat       = msg.lat;\n    watches[msg.imei].lng       = msg.lng;\n    watches[msg.imei].accuracy  = msg.accuracy;\n    watches[msg.imei].sos       = msg.isSOS || false;\n    watches[msg.imei].updatedAt = new Date().toISOString();\n}\nflow.set('watches', watches);\n\nmsg.topic   = msg.isSOS ? 'sos' : 'location';\nmsg.payload = watches[msg.imei];\n\nnode.status({\n    fill:  msg.lat ? 'green' : 'yellow',\n    shape: 'dot',\n    text:  msg.imei + ' → ' + (msg.lat ? msg.lat.toFixed(4)+','+msg.lng.toFixed(4) : 'no fix')\n});\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1080,
+    "y": 140,
+    "wires": [
+      [
+        "5bc8c63c025bf9c5",
+        "8e2c0c8938942cbd",
+        "98d741d00e9ce009",
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "e2dc373b65bca20f",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Handle SOS",
+    "func": "const watches = flow.get('watches') || {};\nif (!watches[msg.imei]) {\n    watches[msg.imei] = {\n        imei: msg.imei,\n        lat: null, lng: null, accuracy: null,\n        sos: true,\n        serving: null,\n        neighbors: [],\n        updatedAt: new Date().toISOString()\n    };\n} else {\n    watches[msg.imei].sos = true;\n    watches[msg.imei].updatedAt = new Date().toISOString();\n}\nflow.set('watches', watches);\n\nmsg.payload = watches[msg.imei];\nmsg.topic   = 'sos';\nmsg.isSOS   = true;\n\nconst locStr = watches[msg.imei].lat\n    ? watches[msg.imei].lat.toFixed(4) + ',' + watches[msg.imei].lng.toFixed(4)\n    : 'unknown location';\n\nmsg.sosText = '⚠ SOS — IMEI ' + msg.imei + ' at ' + locStr + ' (' + new Date().toLocaleTimeString() + ')';\n\nreturn msg;",
+    "outputs": 1,
+    "timeout": "",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 640,
+    "y": 240,
+    "wires": [
+      [
+        "5bc8c63c025bf9c5",
+        "8e2c0c8938942cbd",
+        "5373a21cdb53b39c",
+        "e958bcde4f479c64",
+        "1aa732eb99e5aee6",
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "5bc8c63c025bf9c5",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Build map marker",
+    "func": "const w = msg.payload;\nif (!w.lat) return null;\n\nmsg.payload = {\n    name:      w.imei,\n    lat:       w.lat,\n    lon:       w.lng,\n    icon:      w.sos ? 'danger' : 'circle',\n    iconColor: w.sos ? 'red' : 'blue',\n    label:     w.imei.slice(-4),\n    popup:     '<b>' + (w.sos ? '⚠ SOS — ' : '') + w.imei + '</b><br>' +\n               'Lat: ' + w.lat.toFixed(5) + '<br>' +\n               'Lng: ' + w.lng.toFixed(5) + '<br>' +\n               '±' + Math.round(w.accuracy || 0) + ' m<br>' +\n               'Updated: ' + w.updatedAt\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1300,
+    "y": 140,
+    "wires": [
+      [
+        "1a45968281dc60ab"
+      ]
+    ]
+  },
+  {
+    "id": "1a45968281dc60ab",
+    "type": "worldmap",
+    "z": "d781c74f0a2e9fc5",
+    "name": "World Map",
+    "lat": "50.6",
+    "lon": "3.07",
+    "zoom": "13",
+    "layer": "OSM",
+    "cluster": "",
+    "maxage": "",
+    "usermenu": "show",
+    "layers": "show",
+    "panit": "false",
+    "panlock": "false",
+    "zoomlock": "false",
+    "hiderightclick": "false",
+    "coords": "deg",
+    "showgrid": "false",
+    "allowFileDrop": "false",
+    "path": "/worldmap",
+    "overlist": "DR,CO,RA,DN,HM",
+    "maplist": "OSMG,OSMC,EsriC,EsriS,EsriT,EsriDG,UKOS",
+    "mapname": "",
+    "mapurl": "",
+    "mapopt": "",
+    "mapwms": false,
+    "x": 1500,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "8e2c0c8938942cbd",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Format table rows",
+    "func": "const watches = flow.get('watches') || {};\nconst rows = Object.values(watches).map(w => ({\n    imei:      w.imei,\n    sos:       w.sos,\n    lat:       w.lat  != null ? w.lat.toFixed(5)  : '—',\n    lng:       w.lng  != null ? w.lng.toFixed(5)  : '—',\n    accuracy:  w.accuracy != null ? Math.round(w.accuracy) + ' m' : '—',\n    updatedAt: w.updatedAt\n}));\nmsg.payload = rows;\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1300,
+    "y": 220,
+    "wires": [
+      [
+        "d14a3c3c5f27c045"
+      ]
+    ]
+  },
+  {
+    "id": "d14a3c3c5f27c045",
+    "type": "ui_table",
+    "z": "d781c74f0a2e9fc5",
+    "group": "grp_table",
+    "name": "Watch Table",
+    "order": 2,
+    "width": "12",
+    "height": "6",
+    "columns": [
+      {
+        "field": "imei",
+        "title": "IMEI",
+        "width": "160",
+        "align": "left",
+        "formatter": "plaintext"
+      },
+      {
+        "field": "sos",
+        "title": "SOS",
+        "width": "60",
+        "align": "center",
+        "formatter": "tickCross"
+      },
+      {
+        "field": "lat",
+        "title": "Latitude",
+        "width": "100",
+        "align": "right",
+        "formatter": "plaintext"
+      },
+      {
+        "field": "lng",
+        "title": "Longitude",
+        "width": "100",
+        "align": "right",
+        "formatter": "plaintext"
+      },
+      {
+        "field": "accuracy",
+        "title": "Accuracy",
+        "width": "80",
+        "align": "right",
+        "formatter": "plaintext"
+      },
+      {
+        "field": "updatedAt",
+        "title": "Last seen",
+        "width": "180",
+        "align": "left",
+        "formatter": "plaintext"
+      }
+    ],
+    "outputs": 0,
+    "x": 1500,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "5373a21cdb53b39c",
+    "type": "ui_text",
+    "z": "d781c74f0a2e9fc5",
+    "group": "grp_sos",
+    "order": 1,
+    "width": "12",
+    "height": "2",
+    "name": "SOS Alert Text",
+    "label": "Latest SOS",
+    "format": "{{msg.sosText}}",
+    "layout": "row-left",
+    "x": 860,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "e958bcde4f479c64",
+    "type": "ui_toast",
+    "z": "d781c74f0a2e9fc5",
+    "position": "top right",
+    "displayTime": "10",
+    "highlight": "red",
+    "sendall": true,
+    "outputs": 0,
+    "ok": "Acknowledge",
+    "cancel": "",
+    "raw": false,
+    "className": "",
+    "name": "SOS Notification",
+    "x": 860,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "98d741d00e9ce009",
+    "type": "debug",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Location debug",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1300,
+    "y": 300,
+    "wires": []
+  },
+  {
+    "id": "1aa732eb99e5aee6",
+    "type": "debug",
+    "z": "d781c74f0a2e9fc5",
+    "name": "SOS debug",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 860,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "74b2b1bf0e8c55e5",
+    "type": "mqtt-broker",
+    "name": "HiveMQ Cloud",
+    "broker": "xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud",
+    "port": "8883",
+    "tls": "tlscfg_hivemq",
+    "clientid": "nodered-kii07-g00",
+    "autoConnect": true,
+    "usetls": true,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "watches/nodered/status",
+    "birthQos": "1",
+    "birthPayload": "online",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "watches/nodered/status",
+    "willQos": "1",
+    "willPayload": "offline",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": "",
+    "birthRetain": "true",
+    "willRetain": "true"
+  },
+  {
+    "id": "grp_table",
+    "type": "ui_group",
+    "name": "Watch List",
+    "tab": "ui_tab_main",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "grp_sos",
+    "type": "ui_group",
+    "name": "SOS Alerts",
+    "tab": "ui_tab_main",
+    "order": 3,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "ui_tab_main",
+    "type": "ui_tab",
+    "name": "Watch Tracker",
+    "icon": "fa-watch",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "6e768fba74c44cdd",
+    "type": "global-config",
+    "env": [],
+    "modules": {
+      "node-red-contrib-web-worldmap": "5.8.1",
+      "node-red-node-ui-table": "0.4.5",
+      "node-red-dashboard": "3.6.6"
+    }
+  },
+  {
+    "id": "tlscfg_hivemq",
+    "type": "tls-config",
+    "name": "HiveMQ Cloud TLS (SNI)",
+    "cert": "",
+    "key": "",
+    "ca": "",
+    "certname": "",
+    "keyname": "",
+    "caname": "",
+    "servername": "xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud",
+    "verifyservercert": true,
+    "alpnprotocol": ""
+  },
+  {
+    "id": "cmt_lab1",
+    "type": "comment",
+    "z": "d781c74f0a2e9fc5",
+    "name": "IoTLAB1 - extension Tab5 (mouvement + SOS + Google Static Maps)",
+    "info": "Ajouts IoTLAB1 : topics renseignes, TLS/SNI, sortie vers la Tab5.",
+    "x": 260,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "fn_tab5",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Tab5 : mouvement + carte",
+    "func": "// =====================================================================\n//  IoTLAB1 - Tab5 : detection de mouvement + URL Google Static Maps\n//  Entree : msg.payload = fiche montre {imei, lat, lng, accuracy, sos, updatedAt}\n//           msg.isSOS (SOS recu)   msg.isAck (acquittement depuis la Tab5)\n//  Sortie 1 -> watches/tab5 (retain)   Sortie 2 -> watches/cmd (\"url#\")\n// =====================================================================\nconst w = msg.payload || {};\nif (!w.imei) return [null, null];\n\nconst KEY       = env.get('GOOGLE_MAPS_STATIC_KEY') || env.get('GOOGLE_GEO_API_KEY') || 'VOTRE_CLE_STATIC_MAPS';\nconst MOVE_MIN  = Number(env.get('MOVE_MIN_M') || 150);   // seuil mini (m)\nconst MAP_W = 640, MAP_H = 280, MAP_SCALE = 2;            // => 1280 x 560 px sur la Tab5\n\nconst ref   = flow.get('tab5Ref')   || {};   // position de reference par IMEI\nconst latch = flow.get('sosLatch')  || {};   // SOS memorise jusqu'a acquittement\n\nfunction haversine(lat1, lon1, lat2, lon2) {\n    const R = 6371000, toRad = d => d * Math.PI / 180;\n    const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);\n    const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;\n    return 2 * R * Math.asin(Math.sqrt(a));\n}\nfunction circlePath(lat, lng, r, n) {          // cercle d'incertitude (n points)\n    const pts = [];\n    for (let i = 0; i <= n; i++) {\n        const t = 2 * Math.PI * i / n;\n        const dLat = (r * Math.cos(t)) / 111320;\n        const dLng = (r * Math.sin(t)) / (111320 * Math.cos(lat * Math.PI / 180));\n        pts.push((lat + dLat).toFixed(5) + ',' + (lng + dLng).toFixed(5));\n    }\n    return pts.join('|');\n}\nfunction zoomFor(acc) {\n    if (!acc)        return 15;\n    if (acc < 250)   return 16;\n    if (acc < 800)   return 15;\n    if (acc < 2000)  return 14;\n    if (acc < 5000)  return 13;\n    return 12;\n}\n\n// ---- 1. Gestion du verrou SOS -------------------------------------\nif (msg.isSOS) latch[w.imei] = { since: new Date().toISOString() };\nif (msg.isAck) delete latch[w.imei];\nflow.set('sosLatch', latch);\nconst sosActive = !!latch[w.imei];\n\n// ---- 2. Detection de mouvement -----------------------------------\nconst hasFix = (w.lat !== null && w.lat !== undefined);\nconst prev   = ref[w.imei];\nlet dist = null, moved = false, seuil = null;\nif (hasFix && prev && !msg.isSOS && !msg.isAck) {\n    dist  = haversine(prev.lat, prev.lng, w.lat, w.lng);\n    seuil = Math.max(MOVE_MIN, ((w.accuracy || 0) + (prev.acc || 0)) / 2);\n    moved = dist > seuil;\n}\n// La reference n'est mise a jour qu'au 1er fix ou apres un vrai mouvement\nif (hasFix && (!prev || moved)) {\n    ref[w.imei] = { lat: w.lat, lng: w.lng, acc: w.accuracy || 0, ts: w.updatedAt };\n}\nflow.set('tab5Ref', ref);\n\n// ---- 3. Qualification de l'evenement ------------------------------\nlet event;\nif (msg.isAck)            event = 'SOS_ACK';\nelse if (msg.isSOS)       event = hasFix ? 'SOS' : 'SOS_NOFIX';\nelse if (!hasFix)         event = 'NOFIX';\nelse if (sosActive)       event = 'SOS_UPDATE';\nelse if (!prev)           event = 'FIRST_FIX';\nelse if (moved)           event = 'MOVE';\nelse                      event = 'POSITION';\n\nconst hhmm = new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' });\nconst texts = {\n    SOS:        'SOS ! Derniere position connue',\n    SOS_NOFIX:  'SOS ! Position inconnue - localisation demandee',\n    SOS_UPDATE: 'SOS en cours - position actualisee',\n    SOS_ACK:    'SOS acquitte',\n    NOFIX:      'Pas de fix (Geolocation API)',\n    FIRST_FIX:  'Premiere position recue',\n    MOVE:       'Mouvement detecte : ' + Math.round(dist || 0) + ' m',\n    POSITION:   'Position stable (' + Math.round(dist || 0) + ' m)'\n};\n\n// ---- 4. URL Google Static Maps (format jpg-baseline pour TJpgDec) --\nlet mapUrl = '';\nif (hasFix) {\n    const acc = Math.round(w.accuracy || 0);\n    const color = sosActive ? 'red' : 'blue';\n    const p = [];\n    p.push('center=' + w.lat.toFixed(5) + ',' + w.lng.toFixed(5));\n    p.push('zoom=' + zoomFor(acc));\n    p.push('size=' + MAP_W + 'x' + MAP_H + '&scale=' + MAP_SCALE);\n    p.push('maptype=roadmap&format=jpg-baseline&language=fr');\n    if (acc > 0) p.push('path=' + encodeURIComponent('fillcolor:0x' + (sosActive ? 'FF0000' : '1E64FF') + '33|color:0x'\n                       + (sosActive ? 'FF0000' : '1E64FF') + 'AA|weight:2|' + circlePath(w.lat, w.lng, acc, 24)));\n    if (moved && prev) p.push('markers=' + encodeURIComponent('size:mid|color:gray|label:P|' + prev.lat.toFixed(5) + ',' + prev.lng.toFixed(5)));\n    p.push('markers=' + encodeURIComponent('color:' + color + '|label:' + (sosActive ? 'S' : 'K') + '|' + w.lat.toFixed(5) + ',' + w.lng.toFixed(5)));\n    p.push('key=' + KEY);\n    mapUrl = 'https://maps.googleapis.com/maps/api/staticmap?' + p.join('&');\n}\n\nconst out1 = {\n    topic: 'watches/tab5',\n    payload: {\n        imei: w.imei, event: event, sos: sosActive,\n        lat: hasFix ? Number(w.lat.toFixed(6)) : null,\n        lng: hasFix ? Number(w.lng.toFixed(6)) : null,\n        acc: hasFix ? Math.round(w.accuracy || 0) : null,\n        dist: dist !== null ? Math.round(dist) : null,\n        seuil: seuil !== null ? Math.round(seuil) : null,\n        ts: hhmm, msg: texts[event], mapUrl: mapUrl\n    }\n};\n// Sur SOS : on redemande une position fraiche a la montre (via le smartphone)\nconst out2 = msg.isSOS ? { topic: 'watches/cmd', payload: 'url#' } : null;\n\nnode.status({ fill: sosActive ? 'red' : (moved ? 'yellow' : 'green'), shape: 'dot', text: event + ' ' + hhmm });\nreturn [out1, out2];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1110,
+    "y": 500,
+    "wires": [
+      [
+        "mq_out_tab5",
+        "dbg_tab5"
+      ],
+      [
+        "rl_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "mq_out_tab5",
+    "type": "mqtt out",
+    "z": "d781c74f0a2e9fc5",
+    "name": "watches/tab5 (retain)",
+    "topic": "watches/tab5",
+    "qos": "1",
+    "retain": "true",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "74b2b1bf0e8c55e5",
+    "x": 1380,
+    "y": 480,
+    "wires": []
+  },
+  {
+    "id": "dbg_tab5",
+    "type": "debug",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Tab5 debug",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1360,
+    "y": 520,
+    "wires": []
+  },
+  {
+    "id": "rl_cmd",
+    "type": "delay",
+    "z": "d781c74f0a2e9fc5",
+    "name": "max 1 url# / 60 s",
+    "pauseType": "rate",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "60",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": true,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1360,
+    "y": 580,
+    "wires": [
+      [
+        "mq_out_cmd"
+      ]
+    ]
+  },
+  {
+    "id": "mq_out_cmd",
+    "type": "mqtt out",
+    "z": "d781c74f0a2e9fc5",
+    "name": "watches/cmd",
+    "topic": "watches/cmd",
+    "qos": "1",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "74b2b1bf0e8c55e5",
+    "x": 1560,
+    "y": 580,
+    "wires": []
+  },
+  {
+    "id": "mq_in_ack",
+    "type": "mqtt in",
+    "z": "d781c74f0a2e9fc5",
+    "name": "watches/ack (Tab5)",
+    "topic": "watches/ack",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "74b2b1bf0e8c55e5",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 170,
+    "y": 640,
+    "wires": [
+      [
+        "fn_ack"
+      ]
+    ]
+  },
+  {
+    "id": "fn_ack",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Acquittement SOS",
+    "func": "// Acquittement SOS publie par la Tab5 sur watches/ack : {\"imei\":\"...\"}\nlet imei = null;\ntry { imei = (typeof msg.payload === 'object') ? msg.payload.imei : JSON.parse(msg.payload).imei; } catch (e) {}\nconst watches = flow.get('watches') || {};\nconst ids = imei ? [imei] : Object.keys(watches);\nreturn [ids.filter(id => watches[id]).map(id => ({ payload: Object.assign({}, watches[id], { sos: false }), isAck: true }))];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 640,
+    "wires": [
+      [
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "inj_t1",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test Tab5 : position A",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"imei\":\"869387020011400\",\"lat\":48.99050,\"lng\":1.71700,\"accuracy\":400,\"sos\":false,\"updatedAt\":\"test\"}",
+    "payloadType": "json",
+    "x": 820,
+    "y": 500,
+    "wires": [
+      [
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "inj_t2",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test Tab5 : position B (~900 m)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"imei\":\"869387020011400\",\"lat\":48.99500,\"lng\":1.72700,\"accuracy\":350,\"sos\":false,\"updatedAt\":\"test\"}",
+    "payloadType": "json",
+    "x": 790,
+    "y": 540,
+    "wires": [
+      [
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "inj_t3",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test Tab5 : SOS",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "isSOS",
+        "v": "true",
+        "vt": "bool"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"imei\":\"869387020011400\",\"lat\":48.99500,\"lng\":1.72700,\"accuracy\":350,\"sos\":true,\"updatedAt\":\"test\"}",
+    "payloadType": "json",
+    "x": 830,
+    "y": 580,
+    "wires": [
+      [
+        "fn_tab5"
+      ]
+    ]
+  },
+  {
+    "id": "inj_phone",
+    "type": "inject",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Test : ma cellule (NetMonster)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"rat\":\"lte\",\"mcc\":208,\"mnc\":1,\"tac\":0,\"ci\":0,\"rsrp\":-95}",
+    "payloadType": "json",
+    "x": 200,
+    "y": 720,
+    "wires": [
+      [
+        "fn_phone"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_geo_raw",
+    "type": "debug",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Geo API : reponse brute",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1090,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "fn_phone",
+    "type": "function",
+    "z": "d781c74f0a2e9fc5",
+    "name": "Prepare Geo request (smartphone LTE/NR)",
+    "func": "// Test : geolocaliser une cellule relevee sur un smartphone (NetMonster, Field Test...)\n// msg.payload = {\"rat\":\"lte\",\"mcc\":208,\"mnc\":1,\"tac\":<TAC>,\"ci\":<Cell ID complet>,\"rsrp\":<dBm>}\n//   rat = \"lte\" (4G : ci = ECI = eNB x 256 + CID)   ou   \"nr\" (5G SA : ci = NCI 36 bits)\nconst c = msg.payload || {};\nconst apiKey = String(env.get('GOOGLE_GEO_API_KEY') || '').trim();\nif (!apiKey || apiKey.startsWith('__')) { node.error('Cle API absente ou illisible -> section 6.3', msg); return null; }\nconst rat = (c.rat || 'lte').toLowerCase();\nconst ci  = Number(c.ci !== undefined ? c.ci : c.eci);\nconst tower = { mobileCountryCode: Number(c.mcc), mobileNetworkCode: Number(c.mnc), signalStrength: Number(c.rsrp) };\nif (c.tac !== undefined && c.tac !== '') tower.locationAreaCode = Number(c.tac);\nif (rat === 'nr') tower.newRadioCellId = ci; else tower.cellId = ci;   // cellId est refuse en NR\nmsg.imei = 'SMARTPHONE';\nmsg.isSOS = false;\nmsg.serving = tower;\nmsg.neighbors = [];\nmsg.url = 'https://www.googleapis.com/geolocation/v1/geolocate?key=' + apiKey;\nmsg.method = 'POST';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = { radioType: rat, considerIp: false, cellTowers: [tower] };\nnode.status({ fill: 'blue', shape: 'dot', text: rat === 'nr' ? 'NR ' + ci : 'eNB ' + Math.floor(ci / 256) + ' / CID ' + (ci % 256) });\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 500,
+    "y": 720,
+    "wires": [
+      [
+        "8c3a4825ae0ff6d7"
+      ]
+    ]
+  }
+]
